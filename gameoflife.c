@@ -17,7 +17,7 @@
 int countNeighbors(int *currentfield, int x, int y, int w, int h);
 void readInputConfig(int *currentfield, int width, int height, char inputConfiguration[]);
 
-long TimeSteps = 3;
+long TimeSteps = 100;
 
 int isDirectoryExists(const char *path)
 {
@@ -31,11 +31,13 @@ int isDirectoryExists(const char *path)
     return 0;
 }
 
-void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int localHeight, int threadNumber, int originX, int originY, int totalWidth)
+void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int localHeight, int threadNumber, int cartX, int cartY)
 {
+    int w = localWidth - 2, h = localHeight - 2;
+    int originY = cartY * h;
+    int originX = cartX * w;
     char filename[2048];
     int x, y;
-    int w = localWidth - originX, h = localHeight - originY;
     if (isDirectoryExists("vti") == 0)
         mkdir("vti", 0777);
     int offsetX = originX;
@@ -47,8 +49,8 @@ void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int 
 
     fprintf(fp, "<?xml version=\"1.0\"?>\n");
     fprintf(fp, "<VTKFile type=\"ImageData\" version=\"0.1\" byte_order=\"LittleEndian\" header_type=\"UInt64\">\n");
-    fprintf(fp, "<ImageData WholeExtent=\"%d %d %d %d %d %d\" Origin=\"0 0 0\" Spacing=\"%le %le %le\">\n", offsetX,
-            offsetX + w, offsetY, offsetY + h, 0, 0, deltax, deltax, 0.0);
+    fprintf(fp, "<ImageData WholeExtent=\"%d %d %d %d %d %d\" Origin=\"0 0 0\" Spacing=\"%le %le %le\">\n", originX,
+            originX + w, originY, originY + h, 0, 0, deltax, deltax, 0.0);
     fprintf(fp, "<CellData Scalars=\"%s\">\n", prefix);
     fprintf(fp, "<DataArray type=\"Float32\" Name=\"%s\" format=\"appended\" offset=\"0\"/>\n", prefix);
     fprintf(fp, "</CellData>\n");
@@ -57,11 +59,11 @@ void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int 
     fprintf(fp, "_");
     fwrite((unsigned char *)&nxy, sizeof(long), 1, fp);
 
-    for (y = originY; y < localHeight; y++)
+    for (y = 1; y < localHeight - 1; y++)
     {
-        for (x = originX; x < localWidth; x++)
+        for (x = 1; x < localWidth - 1; x++)
         {
-            float value = data[calcIndex(totalWidth, x, y)];
+            float value = data[calcIndex(localWidth, x, y)];
             fwrite((unsigned char *)&value, sizeof(float), 1, fp);
         }
     }
@@ -107,44 +109,31 @@ int countNeighbors(int *currentfield, int x, int y, int widthTotal, int heightTo
     return cnt;
 }
 
-void evolve(int *currentfield, double *newfield, int widthTotal, int heightTotal, int threadNumber, int nX, int nY, int pX, int pY, long t)
+void evolve(int *field, int *newField, int segmentWidth, int segmentHeight, int my_rank)
 {
-    int x, y, xStart;
-    int localpX, localpY;
 
-    localpX = threadNumber % pX;
-    localpY = threadNumber / pX;
+    int x = 0, y = 0;
 
-    x = nX * localpX;
-    xStart = x;
-
-    int widthLocal = nX * (localpX + 1);
-    y = nY * localpY;
-    int heightLocal = nY * (localpY + 1);
-
-    int originX = x, originY = y;
-
-    while (y < heightLocal)
+    while (y < segmentHeight)
     {
-        int neighbors = countNeighbors(currentfield, x, y, widthTotal, heightTotal);
-        int index = calcIndex(widthTotal, x, y);
-        if (currentfield[index])
+        int neighbors = countNeighbors(field, x, y, segmentWidth, segmentHeight);
+        int index = calcIndex(segmentWidth, x, y);
+        if (field[index])
             neighbors--;
 
-        if (neighbors == 3 || (neighbors == 2 && currentfield[index]))
-            newfield[index] = 1;
+        if (neighbors == 3 || (neighbors == 2 && field[index]))
+            newField[index] = 1;
         else
-            newfield[index] = 0;
+            newField[index] = 0;
 
-        if (x < widthLocal - 1)
+        if (x < segmentWidth - 1)
             x++;
         else
         {
             y++;
-            x = xStart;
+            x = 0;
         }
     }
-    writeVTK2(t, currentfield, "gol", widthLocal, heightLocal, threadNumber, originX, originY, widthTotal);
 }
 
 void filling(int *currentfield, int w, int h, char *inputConfiguration, int myRank)
@@ -263,91 +252,24 @@ void readInputConfig(int *currentfield, int width, int height, char *inputConfig
 void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threadX, int threadY, char *inputConfiguration)
 {
     int *field = calloc(segmentWidth * segmentHeight, sizeof(int));
+    int *newField = calloc(segmentWidth * segmentHeight, sizeof(int));
 
     MPI_Init(&argc, &argv);
     int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // int dims[2] = {0, 0};
-    // MPI_Dims_create(size, 2, dims);
-    int dims[1] = {0};
-    MPI_Dims_create(size, 1, dims);
+    int dims[2] = {0, 0};
+    MPI_Dims_create(size, 2, dims);
 
-    // int periods[2] = {true, true};
-    int periods[1] = {true};
+    int periods[2] = {true, true};
     int reorder = true;
 
     MPI_Comm CART_COMM_WORLD;
-    // MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
-    MPI_Cart_create(MPI_COMM_WORLD, 1, dims, periods, reorder, &CART_COMM_WORLD);
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
 
     int my_rank;
     MPI_Comm_rank(CART_COMM_WORLD, &my_rank);
     filling(field, segmentWidth, segmentHeight, inputConfiguration, my_rank);
-
-    for (int y = 0; y < segmentHeight; y++)
-    {
-        printf("y: %d  |", y);
-        for (int x = 0; x < segmentWidth; x++)
-        {
-            // field[calcIndex(segmentWidth, x, y)] = (x + 1) + (my_rank * 10);
-            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
-        }
-        printf("\n");
-    }
-
-    // int my_coords[2];
-    // MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
-    int my_coords[1] = {0};
-    MPI_Cart_coords(CART_COMM_WORLD, my_rank, 1, my_coords);
-
-    // printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0],my_coords[1]);
-    printf("[MPI process %d] I am located at %d.\n", my_rank, my_coords[0]);
-
-    int dimensions_full_array[2] = {1, segmentWidth};
-    int dimensions_subarray[2] = {1, 1};
-
-    int start_coordinates[2] = {0, 0};
-    MPI_Datatype ghostlayerleft;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerleft);
-    MPI_Type_commit(&ghostlayerleft);
-
-    start_coordinates[1] = 1;
-    MPI_Datatype innerlayerleft;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerleft);
-    MPI_Type_commit(&innerlayerleft);
-
-    start_coordinates[1] = segmentWidth - 1;
-    MPI_Datatype ghostlayerright;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerright);
-    MPI_Type_commit(&ghostlayerright);
-
-    start_coordinates[1] = segmentWidth - 2;
-    MPI_Datatype innerlayerright;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerright);
-    MPI_Type_commit(&innerlayerright);
-
-    MPI_Datatype innerlayers[2] = {innerlayerright, innerlayerleft};
-    MPI_Datatype ghostlayers[2] = {ghostlayerright, ghostlayerleft};
-    MPI_Request requests[4];
-    MPI_Status status[4];
-
-    int r0, r1;
-    int req = 0;
-    for (int dim = 0, side = 0; dim < 1; ++dim)
-    {
-        MPI_Cart_shift(CART_COMM_WORLD, dim, 1, &r0, &r1);
-        printf("R0: %d | R1: %d \n", r0, r1);
-        MPI_Isend(field, 1, innerlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
-        MPI_Irecv(field, 1, ghostlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
-        ++side;
-        MPI_Isend(field, 1, innerlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
-        MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
-        ++side;
-    }
-    MPI_Waitall(req, requests, status);
-
-    MPI_Finalize();
 
     printf("Rank: %d\n", my_rank);
     for (int y = 0; y < segmentHeight; y++)
@@ -359,7 +281,88 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
         }
         printf("\n");
     }
+    printf("---------------------------------------------------------------\n");
 
+    int my_coords[2];
+    MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
+
+    printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0], my_coords[1]);
+
+    int dimensions_full_array[2] = {segmentHeight, segmentWidth};
+    int dimensions_subarray_horizontal[2] = {1, segmentWidth};
+    int dimensions_subarray_vertical[2] = {segmentHeight, 1};
+
+    int start_coordinates[2] = {0, 0};
+    MPI_Datatype ghostlayerLeft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_vertical, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerLeft);
+    MPI_Type_commit(&ghostlayerLeft);
+
+    start_coordinates[1] = 1;
+    MPI_Datatype innerlayerLeft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_vertical, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerLeft);
+    MPI_Type_commit(&innerlayerLeft);
+
+    start_coordinates[1] = segmentWidth - 1;
+    MPI_Datatype ghostlayerRight;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_vertical, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerRight);
+    MPI_Type_commit(&ghostlayerRight);
+
+    start_coordinates[1] = segmentWidth - 2;
+    MPI_Datatype innerlayerRight;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_vertical, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerRight);
+    MPI_Type_commit(&innerlayerRight);
+
+    //------------------------------------------------------------------------
+
+    start_coordinates[1] = 0;
+    MPI_Datatype ghostlayerBottom;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_horizontal, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerBottom);
+    MPI_Type_commit(&ghostlayerBottom);
+
+    start_coordinates[0] = 1;
+    MPI_Datatype innerlayerBottom;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_horizontal, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerBottom);
+    MPI_Type_commit(&innerlayerBottom);
+
+    start_coordinates[0] = segmentHeight - 1;
+    MPI_Datatype ghostlayerTop;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_horizontal, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerTop);
+    MPI_Type_commit(&ghostlayerTop);
+
+    start_coordinates[0] = segmentHeight - 2;
+    MPI_Datatype innerlayerTop;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_horizontal, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerTop);
+    MPI_Type_commit(&innerlayerTop);
+
+    MPI_Datatype innerlayers[4] = {innerlayerTop, innerlayerLeft, innerlayerBottom, innerlayerRight};
+    MPI_Datatype ghostlayers[4] = {ghostlayerTop, ghostlayerLeft, ghostlayerBottom, ghostlayerRight};
+
+    printf("TimeSteps: %ld\n", TimeSteps);
+    for (long t = 0; t < TimeSteps; t++)
+    {
+        MPI_Request requests[8];
+        MPI_Status status[8];
+        int r0, r1;
+        int req = 0;
+
+        for (int dim = 0, side = 0; dim < 2; ++dim)
+        {
+            MPI_Cart_shift(CART_COMM_WORLD, dim, 1, &r0, &r1);
+            MPI_Isend(field, 1, innerlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+            MPI_Irecv(field, 1, ghostlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+            ++side;
+            MPI_Isend(field, 1, innerlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+            MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+            ++side;
+        }
+        MPI_Waitall(req, requests, status);
+
+        evolve(field, newField, segmentWidth, segmentHeight, my_rank);
+        field = newField;
+
+        writeVTK2(t, field, "gol", segmentWidth, segmentHeight, my_rank, my_coords[1], my_coords[0]);
+    }
+    MPI_Finalize();
     free(field);
 }
 
@@ -384,7 +387,7 @@ int main(int argc, char *argv[])
     if (segmentWidth <= 0)
         segmentWidth = 10;
     if (segmentHeight <= 0)
-        segmentHeight = 1;
+        segmentHeight = 10;
     if (amountXThreads <= 0)
         amountXThreads = 2;
     if (amountYThreads <= 0)
@@ -394,6 +397,9 @@ int main(int argc, char *argv[])
 
     int widthTotal = segmentWidth * amountXThreads;
     int heightTotal = segmentHeight * amountYThreads;
+
+    segmentHeight = segmentHeight + 2;
+    segmentWidth = segmentWidth + 2;
 
     int bufferSize = widthTotal * heightTotal;
 
