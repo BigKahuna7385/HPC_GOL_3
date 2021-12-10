@@ -317,13 +317,13 @@ int main(int argc, char *argv[])
     if (argc > 5)
         amountYThreads = atoi(argv[5]);
     if (segmentWidth <= 0)
-        segmentWidth = 200;
+        segmentWidth = 10;
     if (segmentHeight <= 0)
-        segmentHeight = 200;
+        segmentHeight = 1;
     if (amountXThreads <= 0)
         amountXThreads = 2;
     if (amountYThreads <= 0)
-        amountYThreads = 4;
+        amountYThreads = 1;
     if (TimeSteps <= 0)
         TimeSteps = 100;
 
@@ -350,73 +350,101 @@ int main(int argc, char *argv[])
         fclose(fp);
     }
 
-    // mpi init
-    int rank, size, i;
-    MPI_Status status;
+    int *field = calloc(segmentWidth * segmentHeight, sizeof(int));
+
     MPI_Init(&argc, &argv);
+    int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    int dimension = 2;
-    int gsizes[2] = {segmentHeight * amountYThreads, segmentWidth * amountXThreads};
-    int lsizes[2] = {segmentHeight, segmentWidth};
-    int xThread = rank % amountXThreads;
-    int yThread = rank / amountXThreads;
-    int startX = xThread * segmentWidth;
-    int startY = yThread * segmentHeight;
-    int start_indices[2] = {startX, startY};
+    // int dims[2] = {0, 0};
+    // MPI_Dims_create(size, 2, dims);
+    int dims[1] = {0};
+    MPI_Dims_create(size, 1, dims);
 
-    // Initialisieren der Subarrays
-    int *ghostlayerTop;
-    int *ghostlayerLeft;
-    int *ghostlayerBottom;
-    int *ghostlayerRight;
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &ghostlayerTop);
-    MPI_Type_commit(&ghostlayerTop);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &ghostlayerLeft);
-    MPI_Type_commit(&ghostlayerLeft);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &ghostlayerBottom);
-    MPI_Type_commit(&ghostlayerBottom);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &ghostlayerRight);
-    MPI_Type_commit(&ghostlayerRight);
+    // int periods[2] = {true, true};
+    int periods[1] = {true};
+    int reorder = true;
 
-    int *innerlayerTop;
-    int *innerlayerLeft;
-    int *innerlayerBottom;
-    int *innerlayerRight;
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &innerlayerTop);
-    MPI_Type_commit(&innerlayerTop);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &innerlayerLeft);
-    MPI_Type_commit(&innerlayerLeft);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &innerlayerBottom);
-    MPI_Type_commit(&innerlayerBottom);
-    MPI_Type_create_subarray(dimension, gsizes, lsizes, start_indices, MPI_ORDER_C, MPI_INT, &innerlayerRight);
-    MPI_Type_commit(&innerlayerRight);
+    MPI_Comm CART_COMM_WORLD;
+    // MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
+    MPI_Cart_create(MPI_COMM_WORLD, 1, dims, periods, reorder, &CART_COMM_WORLD);
 
-    // Spielroutine
-    game(segmentWidth, segmentHeight, amountXThreads, amountYThreads, readBuffer);
+    int my_rank;
+    MPI_Comm_rank(CART_COMM_WORLD, &my_rank);
 
-    MPI_Comm communicator;
-    double *field = Calloc(heightTotal * widthTotal, sizeof(double));
-    MPI_Request request[8];
-    MPI_Status status[8];
-    int *destinationRank;
-    MPI_Cart_shift(communicator, 0, 1, &rank, &destinationRank);
-    MPI_Irecv(field, 1, ghostlayerTop, &destinationRank, 1, communicator, &(request[0]));
-    MPI_Irecv(field, 1, ghostlayerLeft, rank_left, 2, communicator, &(request[1]));
-    MPI_Irecv(field, 1, ghostlayerBottom, rank_left, 3, communicator, &(request[2]));
-    MPI_Irecv(field, 1, ghostlayerRight, rank_left, 4, communicator, &(request[3]));
-    MPI_Isend(field, 1, innerlayerBottom, rank_left, 1, communicator, &(request[4]));
-    MPI_Isend(field, 1, innerlayerRight, rank_right, 2, communicator, &(request[5]));
-    MPI_Isend(field, 1, innerlayerTop, rank_right, 3, communicator, &(request[6]));
-    MPI_Isend(field, 1, innerlayerLeft, rank_right, 4, communicator, &(request[7]));
+    for (int y = 0; y < segmentHeight; y++)
+    {
+        printf("y: %d  |", y);
+        for (int x = 0; x < segmentWidth; x++)
+        {
+            field[calcIndex(segmentWidth, x, y)] = (x + 1) + (my_rank * 10);
+            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
+        }
+        printf("\n");
+    }
 
-    MPI_Waitall(4, request, status);
+    // int my_coords[2];
+    // MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
+    int my_coords[1] = {0};
+    MPI_Cart_coords(CART_COMM_WORLD, my_rank, 1, my_coords);
 
-    // Ghostlayeraustausch
+    // printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0],my_coords[1]);
+    printf("[MPI process %d] I am located at %d.\n", my_rank, my_coords[0]);
 
-    // mpi deinit
+    int dimensions_full_array[2] = {1, segmentWidth};
+    int dimensions_subarray[2] = {1, 1};
+
+    int start_coordinates[2] = {0, 0};
+    MPI_Datatype ghostlayerleft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerleft);
+    MPI_Type_commit(&ghostlayerleft);
+
+    start_coordinates[1] = 1;
+    MPI_Datatype innerlayerleft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerleft);
+    MPI_Type_commit(&innerlayerleft);
+
+    start_coordinates[1] = segmentWidth - 1;
+    MPI_Datatype ghostlayerright;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerright);
+    MPI_Type_commit(&ghostlayerright);
+
+    start_coordinates[1] = segmentWidth - 2;
+    MPI_Datatype innerlayerright;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerright);
+    MPI_Type_commit(&innerlayerright);
+
+    MPI_Datatype innerlayers[2] = {innerlayerleft, innerlayerright};
+    MPI_Datatype ghostlayers[2] = {ghostlayerright, ghostlayerleft};
+    MPI_Request requests[4];
+    MPI_Status status[4];
+
+    int r0, r1;
+    int req = 0;
+    for (int dim = 0, side = 0; dim < 1; ++dim)
+    {
+        MPI_Cart_shift(CART_COMM_WORLD, dim, 1, &r0, &r1);
+        MPI_Isend(field, 1, innerlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+        MPI_Irecv(field, 1, ghostlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+        ++side;
+        MPI_Isend(field, 1, innerlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+        MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+        ++side;
+    }
+    MPI_Waitall(req, requests, status);
+
     MPI_Finalize();
+
+    printf("Rank: %d\n", my_rank);
+    for (int y = 0; y < segmentHeight; y++)
+    {
+        printf("y: %d  |", y);
+        for (int x = 0; x < segmentWidth; x++)
+        {
+            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
+        }
+        printf("\n");
+    }
 
     return 0;
 }
