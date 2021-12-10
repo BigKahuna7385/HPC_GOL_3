@@ -14,8 +14,8 @@
 
 #define calcIndex(width, x, y) ((y) * (width) + (x))
 
-int countNeighbors(double *currentfield, int x, int y, int w, int h);
-void readInputConfig(double *currentfield, int width, int height, char inputConfiguration[]);
+int countNeighbors(int *currentfield, int x, int y, int w, int h);
+void readInputConfig(int *currentfield, int width, int height, char inputConfiguration[]);
 
 long TimeSteps = 3;
 
@@ -31,7 +31,7 @@ int isDirectoryExists(const char *path)
     return 0;
 }
 
-void writeVTK2(long timestep, double *data, char prefix[1024], int localWidth, int localHeight, int threadNumber, int originX, int originY, int totalWidth)
+void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int localHeight, int threadNumber, int originX, int originY, int totalWidth)
 {
     char filename[2048];
     int x, y;
@@ -85,7 +85,7 @@ void show(double *currentfield, int w, int h)
     fflush(stdout);
 }
 
-int countNeighbors(double *currentfield, int x, int y, int widthTotal, int heightTotal)
+int countNeighbors(int *currentfield, int x, int y, int widthTotal, int heightTotal)
 {
     int cnt = 0;
     int y1 = y - 1;
@@ -107,7 +107,7 @@ int countNeighbors(double *currentfield, int x, int y, int widthTotal, int heigh
     return cnt;
 }
 
-void evolve(double *currentfield, double *newfield, int widthTotal, int heightTotal, int threadNumber, int nX, int nY, int pX, int pY, long t)
+void evolve(int *currentfield, double *newfield, int widthTotal, int heightTotal, int threadNumber, int nX, int nY, int pX, int pY, long t)
 {
     int x, y, xStart;
     int localpX, localpY;
@@ -147,7 +147,7 @@ void evolve(double *currentfield, double *newfield, int widthTotal, int heightTo
     writeVTK2(t, currentfield, "gol", widthLocal, heightLocal, threadNumber, originX, originY, widthTotal);
 }
 
-void filling(double *currentfield, int w, int h, char *inputConfiguration)
+void filling(int *currentfield, int w, int h, char *inputConfiguration, int myRank)
 {
     if (strlen(inputConfiguration) > 0)
     {
@@ -157,14 +157,13 @@ void filling(double *currentfield, int w, int h, char *inputConfiguration)
     else
     {
         int i;
+        srand((int)(time(NULL) * myRank));
         for (i = 0; i < h * w; i++)
-        {
-            currentfield[i] = (rand() < RAND_MAX / 10) ? 1 : 0; ///< init domain randomly
-        }
+            currentfield[i] = (rand() < RAND_MAX / 4) ? 1 : 0; ///< init domain randomly
     }
 }
 
-void readInputConfig(double *currentfield, int width, int height, char *inputConfiguration)
+void readInputConfig(int *currentfield, int width, int height, char *inputConfiguration)
 {
     int i = 0;
     int x = 0;
@@ -261,41 +260,107 @@ void readInputConfig(double *currentfield, int width, int height, char *inputCon
     } // printf("The String is: %s | The array size is: %d\n", inputConfiguration, stringLength);
 }
 
-void game(int nX, int nY, int threadX, int threadY, char *inputConfiguration)
+void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threadX, int threadY, char *inputConfiguration)
 {
-    int widthTotal = nX * threadX;
-    int heightTotal = nY * threadY;
+    int *field = calloc(segmentWidth * segmentHeight, sizeof(int));
 
-    double *currentfield = calloc(widthTotal * heightTotal, sizeof(double));
-    double *newfield = calloc(widthTotal * heightTotal, sizeof(double));
+    MPI_Init(&argc, &argv);
+    int size;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // printf("Input:\n%s\n", inputConfiguration);
+    // int dims[2] = {0, 0};
+    // MPI_Dims_create(size, 2, dims);
+    int dims[1] = {0};
+    MPI_Dims_create(size, 1, dims);
 
-    filling(currentfield, widthTotal, heightTotal, inputConfiguration);
+    // int periods[2] = {true, true};
+    int periods[1] = {true};
+    int reorder = true;
 
-    long t;
-    for (t = 0; t < TimeSteps; t++)
+    MPI_Comm CART_COMM_WORLD;
+    // MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
+    MPI_Cart_create(MPI_COMM_WORLD, 1, dims, periods, reorder, &CART_COMM_WORLD);
+
+    int my_rank;
+    MPI_Comm_rank(CART_COMM_WORLD, &my_rank);
+    filling(field, segmentWidth, segmentHeight, inputConfiguration, my_rank);
+
+    for (int y = 0; y < segmentHeight; y++)
     {
-        // show(currentfield, widthTotal, heightTotal);
-
-        int threadNumber = 0;
-        // printf("Max threads: %d | Used threads: %d | ThreadNr.: %d\n", omp_get_max_threads(), threadY * threadX, threadNumber);
-        evolve(currentfield, newfield, widthTotal, heightTotal, threadNumber, nX, nY, threadX, threadY, t);
-
-        // printf("%ld timestep\n", t);
-
-        // writeVTK2(t, currentfield, "gol", widthTotal, heightTotal);
-
-        // usleep(100000);
-
-        /// SWAP
-        double *temp = currentfield;
-        currentfield = newfield;
-        newfield = temp;
+        printf("y: %d  |", y);
+        for (int x = 0; x < segmentWidth; x++)
+        {
+            // field[calcIndex(segmentWidth, x, y)] = (x + 1) + (my_rank * 10);
+            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
+        }
+        printf("\n");
     }
 
-    free(currentfield);
-    free(newfield);
+    // int my_coords[2];
+    // MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
+    int my_coords[1] = {0};
+    MPI_Cart_coords(CART_COMM_WORLD, my_rank, 1, my_coords);
+
+    // printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0],my_coords[1]);
+    printf("[MPI process %d] I am located at %d.\n", my_rank, my_coords[0]);
+
+    int dimensions_full_array[2] = {1, segmentWidth};
+    int dimensions_subarray[2] = {1, 1};
+
+    int start_coordinates[2] = {0, 0};
+    MPI_Datatype ghostlayerleft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerleft);
+    MPI_Type_commit(&ghostlayerleft);
+
+    start_coordinates[1] = 1;
+    MPI_Datatype innerlayerleft;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerleft);
+    MPI_Type_commit(&innerlayerleft);
+
+    start_coordinates[1] = segmentWidth - 1;
+    MPI_Datatype ghostlayerright;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerright);
+    MPI_Type_commit(&ghostlayerright);
+
+    start_coordinates[1] = segmentWidth - 2;
+    MPI_Datatype innerlayerright;
+    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerright);
+    MPI_Type_commit(&innerlayerright);
+
+    MPI_Datatype innerlayers[2] = {innerlayerright, innerlayerleft};
+    MPI_Datatype ghostlayers[2] = {ghostlayerright, ghostlayerleft};
+    MPI_Request requests[4];
+    MPI_Status status[4];
+
+    int r0, r1;
+    int req = 0;
+    for (int dim = 0, side = 0; dim < 1; ++dim)
+    {
+        MPI_Cart_shift(CART_COMM_WORLD, dim, 1, &r0, &r1);
+        printf("R0: %d | R1: %d \n", r0, r1);
+        MPI_Isend(field, 1, innerlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+        MPI_Irecv(field, 1, ghostlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
+        ++side;
+        MPI_Isend(field, 1, innerlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+        MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
+        ++side;
+    }
+    MPI_Waitall(req, requests, status);
+
+    MPI_Finalize();
+
+    printf("Rank: %d\n", my_rank);
+    for (int y = 0; y < segmentHeight; y++)
+    {
+        printf("y: %d  |", y);
+        for (int x = 0; x < segmentWidth; x++)
+        {
+            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
+        }
+        printf("\n");
+    }
+
+    free(field);
 }
 
 int main(int argc, char *argv[])
@@ -350,101 +415,7 @@ int main(int argc, char *argv[])
         fclose(fp);
     }
 
-    int *field = calloc(segmentWidth * segmentHeight, sizeof(int));
-
-    MPI_Init(&argc, &argv);
-    int size;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-    // int dims[2] = {0, 0};
-    // MPI_Dims_create(size, 2, dims);
-    int dims[1] = {0};
-    MPI_Dims_create(size, 1, dims);
-
-    // int periods[2] = {true, true};
-    int periods[1] = {true};
-    int reorder = true;
-
-    MPI_Comm CART_COMM_WORLD;
-    // MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
-    MPI_Cart_create(MPI_COMM_WORLD, 1, dims, periods, reorder, &CART_COMM_WORLD);
-
-    int my_rank;
-    MPI_Comm_rank(CART_COMM_WORLD, &my_rank);
-
-    for (int y = 0; y < segmentHeight; y++)
-    {
-        printf("y: %d  |", y);
-        for (int x = 0; x < segmentWidth; x++)
-        {
-            field[calcIndex(segmentWidth, x, y)] = (x + 1) + (my_rank * 10);
-            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
-        }
-        printf("\n");
-    }
-
-    // int my_coords[2];
-    // MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
-    int my_coords[1] = {0};
-    MPI_Cart_coords(CART_COMM_WORLD, my_rank, 1, my_coords);
-
-    // printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0],my_coords[1]);
-    printf("[MPI process %d] I am located at %d.\n", my_rank, my_coords[0]);
-
-    int dimensions_full_array[2] = {1, segmentWidth};
-    int dimensions_subarray[2] = {1, 1};
-
-    int start_coordinates[2] = {0, 0};
-    MPI_Datatype ghostlayerleft;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerleft);
-    MPI_Type_commit(&ghostlayerleft);
-
-    start_coordinates[1] = 1;
-    MPI_Datatype innerlayerleft;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerleft);
-    MPI_Type_commit(&innerlayerleft);
-
-    start_coordinates[1] = segmentWidth - 1;
-    MPI_Datatype ghostlayerright;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &ghostlayerright);
-    MPI_Type_commit(&ghostlayerright);
-
-    start_coordinates[1] = segmentWidth - 2;
-    MPI_Datatype innerlayerright;
-    MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerright);
-    MPI_Type_commit(&innerlayerright);
-
-    MPI_Datatype innerlayers[2] = {innerlayerleft, innerlayerright};
-    MPI_Datatype ghostlayers[2] = {ghostlayerright, ghostlayerleft};
-    MPI_Request requests[4];
-    MPI_Status status[4];
-
-    int r0, r1;
-    int req = 0;
-    for (int dim = 0, side = 0; dim < 1; ++dim)
-    {
-        MPI_Cart_shift(CART_COMM_WORLD, dim, 1, &r0, &r1);
-        MPI_Isend(field, 1, innerlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
-        MPI_Irecv(field, 1, ghostlayers[side], r0, 1, CART_COMM_WORLD, &(requests[req++]));
-        ++side;
-        MPI_Isend(field, 1, innerlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
-        MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
-        ++side;
-    }
-    MPI_Waitall(req, requests, status);
-
-    MPI_Finalize();
-
-    printf("Rank: %d\n", my_rank);
-    for (int y = 0; y < segmentHeight; y++)
-    {
-        printf("y: %d  |", y);
-        for (int x = 0; x < segmentWidth; x++)
-        {
-            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
-        }
-        printf("\n");
-    }
+    game(argc, argv, segmentWidth, segmentHeight, amountXThreads, amountYThreads, readBuffer);
 
     return 0;
 }
