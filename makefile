@@ -17,7 +17,6 @@ $(TARGET): $(TARGET).c
 
 
 run: all
-	mpirun -n 4 ./$(TARGET) 100 200 200 2 2 StartingConfigurations/rats_synth.rle
-	
+	mpirun -n 4 ./$(TARGET) 100 256 256
 clean:
 	$(RM) $(TARGET)

@@ -14,10 +14,10 @@
 
 #define calcIndex(width, x, y) ((y) * (width) + (x))
 
-int countNeighbors(int *currentfield, int x, int y, int w, int h);
+int countNeighbors(int *currentfield, int x, int y, int w);
 void readInputConfig(int *currentfield, int width, int height, char inputConfiguration[]);
 
-long TimeSteps = 100;
+long TimeSteps = 0;
 
 int isDirectoryExists(const char *path)
 {
@@ -40,8 +40,6 @@ void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int 
     int x, y;
     if (isDirectoryExists("vti") == 0)
         mkdir("vti", 0777);
-    int offsetX = originX;
-    int offsetY = originY;
     float deltax = 1.0;
     long nxy = w * h * sizeof(float);
     snprintf(filename, sizeof(filename), "vti/%s_%d-%05ld%s", prefix, threadNumber, timestep, ".vti");
@@ -73,7 +71,7 @@ void writeVTK2(long timestep, int *data, char prefix[1024], int localWidth, int 
     fclose(fp);
 }
 
-void show(double *currentfield, int w, int h)
+void show(int *currentfield, int w, int h)
 {
     printf("\033[H");
     int x, y;
@@ -87,7 +85,7 @@ void show(double *currentfield, int w, int h)
     fflush(stdout);
 }
 
-int countNeighbors(int *currentfield, int x, int y, int widthTotal, int heightTotal)
+int countNeighbors(int *currentfield, int x, int y, int widthTotal)
 {
     int cnt = 0;
     int y1 = y - 1;
@@ -95,7 +93,7 @@ int countNeighbors(int *currentfield, int x, int y, int widthTotal, int heightTo
 
     while (y1 <= y + 1)
     {
-        if (currentfield[calcIndex(widthTotal, (x1 + widthTotal) % widthTotal, (y1 + heightTotal) % heightTotal)])
+        if (currentfield[calcIndex(widthTotal, x1, y1)])
             cnt++;
 
         if (x1 <= x)
@@ -111,12 +109,11 @@ int countNeighbors(int *currentfield, int x, int y, int widthTotal, int heightTo
 
 void evolve(int *field, int *newField, int segmentWidth, int segmentHeight, int my_rank)
 {
+    int x = 1, y = 1;
 
-    int x = 0, y = 0;
-
-    while (y < segmentHeight)
+    while (y < segmentHeight - 1)
     {
-        int neighbors = countNeighbors(field, x, y, segmentWidth, segmentHeight);
+        int neighbors = countNeighbors(field, x, y, segmentWidth);
         int index = calcIndex(segmentWidth, x, y);
         if (field[index])
             neighbors--;
@@ -126,12 +123,12 @@ void evolve(int *field, int *newField, int segmentWidth, int segmentHeight, int 
         else
             newField[index] = 0;
 
-        if (x < segmentWidth - 1)
+        if (x < segmentWidth - 2)
             x++;
         else
         {
             y++;
-            x = 0;
+            x = 1;
         }
     }
 }
@@ -148,7 +145,10 @@ void filling(int *currentfield, int w, int h, char *inputConfiguration, int myRa
         int i;
         srand((int)(time(NULL) * myRank));
         for (i = 0; i < h * w; i++)
-            currentfield[i] = (rand() < RAND_MAX / 4) ? 1 : 0; ///< init domain randomly
+        {
+            if (i % w != 0 && i % w != w - 1 && i % h != 0 && i % h != h - 1)
+                currentfield[i] = (rand() < RAND_MAX / 10) ? 1 : 0; ///< init domain randoml
+        }
     }
 }
 
@@ -252,7 +252,6 @@ void readInputConfig(int *currentfield, int width, int height, char *inputConfig
 void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threadX, int threadY, char *inputConfiguration)
 {
     int *field = calloc(segmentWidth * segmentHeight, sizeof(int));
-    int *newField = calloc(segmentWidth * segmentHeight, sizeof(int));
 
     MPI_Init(&argc, &argv);
     int size;
@@ -271,22 +270,8 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
     MPI_Comm_rank(CART_COMM_WORLD, &my_rank);
     filling(field, segmentWidth, segmentHeight, inputConfiguration, my_rank);
 
-    printf("Rank: %d\n", my_rank);
-    for (int y = 0; y < segmentHeight; y++)
-    {
-        printf("y: %d  |", y);
-        for (int x = 0; x < segmentWidth; x++)
-        {
-            printf("%d ", (int)field[calcIndex(segmentWidth, x, y)]);
-        }
-        printf("\n");
-    }
-    printf("---------------------------------------------------------------\n");
-
     int my_coords[2];
     MPI_Cart_coords(CART_COMM_WORLD, my_rank, 2, my_coords);
-
-    printf("[MPI process %d] I am located at (%d, %d).\n", my_rank, my_coords[0], my_coords[1]);
 
     int dimensions_full_array[2] = {segmentHeight, segmentWidth};
     int dimensions_subarray_horizontal[2] = {1, segmentWidth};
@@ -334,12 +319,13 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
     MPI_Type_create_subarray(2, dimensions_full_array, dimensions_subarray_horizontal, start_coordinates, MPI_ORDER_C, MPI_INT, &innerlayerTop);
     MPI_Type_commit(&innerlayerTop);
 
-    MPI_Datatype innerlayers[4] = {innerlayerTop, innerlayerLeft, innerlayerBottom, innerlayerRight};
-    MPI_Datatype ghostlayers[4] = {ghostlayerTop, ghostlayerLeft, ghostlayerBottom, ghostlayerRight};
+    MPI_Datatype innerlayers[4] = {innerlayerTop, innerlayerBottom, innerlayerLeft, innerlayerRight};
+    MPI_Datatype ghostlayers[4] = {ghostlayerBottom, ghostlayerTop, ghostlayerRight, ghostlayerLeft};
 
-    printf("TimeSteps: %ld\n", TimeSteps);
+    // printf("TimeSteps: %ld\n", TimeSteps);
     for (long t = 0; t < TimeSteps; t++)
     {
+
         MPI_Request requests[8];
         MPI_Status status[8];
         int r0, r1;
@@ -355,12 +341,12 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
             MPI_Irecv(field, 1, ghostlayers[side], r1, 1, CART_COMM_WORLD, &(requests[req++]));
             ++side;
         }
-        MPI_Waitall(req, requests, status);
 
+        MPI_Waitall(req, requests, status);
+        int *newField = calloc(segmentWidth * segmentHeight, sizeof(int));
         evolve(field, newField, segmentWidth, segmentHeight, my_rank);
         field = newField;
-
-        writeVTK2(t, field, "gol", segmentWidth, segmentHeight, my_rank, my_coords[1], my_coords[0]);
+        //writeVTK2(t, field, "gol", segmentWidth, segmentHeight, my_rank, my_coords[1], my_coords[0]);
     }
     MPI_Finalize();
     free(field);
@@ -380,18 +366,10 @@ int main(int argc, char *argv[])
         segmentWidth = atoi(argv[2]);
     if (argc > 3)
         segmentHeight = atoi(argv[3]);
-    if (argc > 4)
-        amountXThreads = atoi(argv[4]);
-    if (argc > 5)
-        amountYThreads = atoi(argv[5]);
     if (segmentWidth <= 0)
-        segmentWidth = 10;
+        segmentWidth = 256;
     if (segmentHeight <= 0)
-        segmentHeight = 10;
-    if (amountXThreads <= 0)
-        amountXThreads = 2;
-    if (amountYThreads <= 0)
-        amountYThreads = 1;
+        segmentHeight = 256;
     if (TimeSteps <= 0)
         TimeSteps = 100;
 
@@ -405,7 +383,7 @@ int main(int argc, char *argv[])
 
     char *readBuffer = calloc(bufferSize, sizeof(char));
 
-    if (argc > 6)
+    if (argc > 4)
     {
         snprintf(fileName, sizeof(fileName), "%s", argv[6]);
 
