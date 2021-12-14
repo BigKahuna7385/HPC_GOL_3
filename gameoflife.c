@@ -261,7 +261,7 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
     MPI_Dims_create(size, 2, dims);
 
     int periods[2] = {true, true};
-    int reorder = true;
+    int reorder = false;
 
     MPI_Comm CART_COMM_WORLD;
     MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, reorder, &CART_COMM_WORLD);
@@ -346,7 +346,7 @@ void game(int argc, char *argv[], int segmentWidth, int segmentHeight, int threa
         int *newField = calloc(segmentWidth * segmentHeight, sizeof(int));
         evolve(field, newField, segmentWidth, segmentHeight, my_rank);
         field = newField;
-        //writeVTK2(t, field, "gol", segmentWidth, segmentHeight, my_rank, my_coords[1], my_coords[0]);
+        writeVTK2(t, field, "gol", segmentWidth, segmentHeight, my_rank, my_coords[1], my_coords[0]);
     }
     MPI_Finalize();
     free(field);
